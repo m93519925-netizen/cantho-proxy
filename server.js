@@ -7,20 +7,22 @@ const qs      = require('qs');
 const app  = express();
 app.use(express.json());
 
-const BASE    = 'https://tuyensinh10.cantho.gov.vn';
-const agent   = new https.Agent({ rejectUnauthorized: false, family: 4 });
-const HEADERS = {
-  'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-  'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
-};
+const BASE  = 'https://tuyensinh10.cantho.gov.vn';
+const agent = new https.Agent({ rejectUnauthorized: false, family: 4 });
+const UA    = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
-let S = { cookie: '', captchaToken: '', ncforminfo: '' };
+let S = { cookie: '', ncforminfo: '' };
 
+// ── Lấy cookie + ncforminfo từ trang /ket-qua
 async function refreshSession() {
   const r = await axios.get(`${BASE}/ket-qua`, {
     httpsAgent: agent,
-    headers: { ...HEADERS, Cookie: S.cookie },
+    headers: {
+      'User-Agent':      UA,
+      'Accept':          'text/html,application/xhtml+xml',
+      'Accept-Language': 'vi-VN,vi;q=0.9',
+      'Cookie':          S.cookie,
+    },
     validateStatus: s => s < 400,
   });
 
@@ -28,58 +30,37 @@ async function refreshSession() {
   if (raw.length) S.cookie = raw.map(c => c.split(';')[0]).join('; ');
 
   const $ = cheerio.load(r.data);
+  S.ncforminfo = $('input[name="__ncforminfo"]').val() || '';
 
-  // Log tất cả input để tìm đúng tên field
-  console.log('\n=== FORM INPUTS ===');
-  $('input').each((_, el) => {
-    const name = $(el).attr('name') || '(no name)';
-    const type = $(el).attr('type') || 'text';
-    const val  = ($(el).val() || '').slice(0, 60);
-    console.log(`  [${type}] name="${name}" val="${val}"`);
+  console.log('cookie     :', S.cookie.slice(0, 40));
+  console.log('ncforminfo :', S.ncforminfo.slice(0, 40) + '...');
+}
+
+// ── Lấy captcha image + token từ /captcha/image
+async function fetchCaptcha() {
+  const r = await axios.get(`${BASE}/captcha/image`, {
+    httpsAgent: agent,
+    headers: {
+      'User-Agent': UA,
+      'Referer':    `${BASE}/ket-qua`,
+      'Cookie':     S.cookie,
+      'Accept':     '*/*',
+    },
   });
-  console.log('===================');
-
-  // Thử tất cả tên field có thể có
-  S.captchaToken = $('input[name="captchaToken"]').val()
-                || $('input[name="captcha_token"]').val()
-                || $('input[name="token"]').val()
-                || $('input[name="captchatoken"]').val()
-                || '';
-
-  S.ncforminfo   = $('input[name="__ncforminfo"]').val()
-                || $('input[name="_token"]').val()
-                || $('input[name="csrf_token"]').val()
-                || $('input[name="csrf"]').val()
-                || '';
-
-  console.log('cookie      :', S.cookie.slice(0, 40));
-  console.log('captchaToken:', S.captchaToken ? S.captchaToken.slice(0, 30) + '...' : '⚠ TRỐNG');
-  console.log('ncforminfo  :', S.ncforminfo   ? S.ncforminfo.slice(0, 30)   + '...' : '⚠ TRỐNG');
-
-  return $;
+  // Server trả về { image: "<svg...>", token: "abc123..." }
+  return {
+    svg:          r.data.image || '',
+    captchaToken: r.data.token || '',
+  };
 }
 
 // ── GET /init-session
 app.get('/init-session', async (req, res) => {
   try {
     await refreshSession();
-    res.json({ ok: true, session: S });
+    res.json({ ok: true, cookie: S.cookie, ncforminfo: S.ncforminfo });
   } catch(e) {
     console.error('init-session lỗi:', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── GET /raw-html
-app.get('/raw-html', async (req, res) => {
-  try {
-    const r = await axios.get(`${BASE}/ket-qua`, {
-      httpsAgent: agent,
-      headers: { ...HEADERS, Cookie: S.cookie },
-      validateStatus: s => s < 400,
-    });
-    res.send(r.data);
-  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -89,31 +70,16 @@ app.get('/captcha-img', async (req, res) => {
   try {
     if (req.query.refresh === '1') await refreshSession();
 
-    const imgRes = await axios.get(`${BASE}/captcha/image`, {
-      httpsAgent: agent,
-      headers: {
-        ...HEADERS,
-        Cookie:  S.cookie,
-        Referer: `${BASE}/ket-qua`,
-        Accept:  '*/*',
-      },
-    });
+    const { svg, captchaToken } = await fetchCaptcha();
 
-    console.log('captcha type:', imgRes.headers['content-type']);
+    console.log('captchaToken:', captchaToken.slice(0, 30) + '...');
+    console.log('svg length  :', svg.length);
 
-    let svgStr = '';
-    if (typeof imgRes.data === 'object' && imgRes.data.image) {
-      svgStr = imgRes.data.image;
-    } else if (typeof imgRes.data === 'string') {
-      try { svgStr = JSON.parse(imgRes.data).image || imgRes.data; }
-      catch { svgStr = imgRes.data; }
-    }
-
-    const b64 = Buffer.from(svgStr).toString('base64');
+    const b64 = Buffer.from(svg).toString('base64');
     res.json({
       image:        `data:image/svg+xml;base64,${b64}`,
-      svg:          svgStr,
-      captchaToken: S.captchaToken,
+      svg,
+      captchaToken,
       ncforminfo:   S.ncforminfo,
       cookie:       S.cookie,
     });
@@ -130,21 +96,23 @@ app.post('/tracuu', async (req, res) => {
     const body = qs.stringify({
       cccd:         String(sbd),
       captchaText:  captchaText  || '',
-      captchaToken: captchaToken || S.captchaToken,
+      captchaToken: captchaToken || '',
       __ncforminfo: ncforminfo   || S.ncforminfo,
     });
 
-    console.log(`→ SBD=${sbd} captcha="${captchaText}" token="${(captchaToken||S.captchaToken).slice(0,20)}..."`);
+    console.log(`→ SBD=${sbd} captcha="${captchaText}" token="${captchaToken.slice(0,20)}..."`);
 
     const r = await axios.post(`${BASE}/ket-qua`, body, {
       httpsAgent:   agent,
       maxRedirects: 10,
       headers: {
-        ...HEADERS,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie:         cookie || S.cookie,
-        Origin:         BASE,
-        Referer:        `${BASE}/ket-qua`,
+        'Content-Type':    'application/x-www-form-urlencoded',
+        'Cookie':          cookie || S.cookie,
+        'User-Agent':      UA,
+        'Accept':          'text/html,application/xhtml+xml',
+        'Accept-Language': 'vi-VN,vi;q=0.9',
+        'Origin':          BASE,
+        'Referer':         `${BASE}/ket-qua`,
       },
       validateStatus: s => s < 500,
     });
