@@ -6,7 +6,7 @@ Chạy trên Termux (Android), expose qua zrok cho Google Colab crawl.
 
 ```bash
 pkg install nodejs git
-git clone https://github.com/TEN_BAN/cantho-proxy
+git clone https://github.com/m93519925-netizen/cantho-proxy.git
 cd cantho-proxy
 npm install
 ```
