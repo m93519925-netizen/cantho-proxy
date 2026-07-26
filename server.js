@@ -7,52 +7,54 @@ const qs      = require('qs');
 const app  = express();
 app.use(express.json());
 
-const BASE  = 'https://tuyensinh10.cantho.gov.vn';
-const agent = new https.Agent({ rejectUnauthorized: false });
+const BASE    = 'https://tuyensinh10.cantho.gov.vn';
+const agent   = new https.Agent({ rejectUnauthorized: false, family: 4 });
+const HEADERS = {
+  'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
+};
 
 let S = { cookie: '', captchaToken: '', ncforminfo: '' };
 
-// ── Hàm GET trang /ket-qua, parse form, lưu session
 async function refreshSession() {
   const r = await axios.get(`${BASE}/ket-qua`, {
     httpsAgent: agent,
-    headers: {
-      'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept':          'text/html,application/xhtml+xml',
-      'Accept-Language': 'vi-VN,vi;q=0.9',
-      'Cookie':          S.cookie,
-    },
+    headers: { ...HEADERS, Cookie: S.cookie },
     validateStatus: s => s < 400,
   });
 
-  // Lưu cookie
   const raw = r.headers['set-cookie'] || [];
   if (raw.length) S.cookie = raw.map(c => c.split(';')[0]).join('; ');
 
-  // Parse tất cả input — log ra để debug
   const $ = cheerio.load(r.data);
+
+  // Log tất cả input để tìm đúng tên field
   console.log('\n=== FORM INPUTS ===');
   $('input').each((_, el) => {
-    const name = $(el).attr('name') || '';
-    const type = $(el).attr('type') || '';
+    const name = $(el).attr('name') || '(no name)';
+    const type = $(el).attr('type') || 'text';
     const val  = ($(el).val() || '').slice(0, 60);
-    console.log(`  [${type}] name="${name}" value="${val}"`);
+    console.log(`  [${type}] name="${name}" val="${val}"`);
   });
-  console.log('===================\n');
+  console.log('===================');
 
-  // Thử parse — tên field sẽ thấy trong log
+  // Thử tất cả tên field có thể có
   S.captchaToken = $('input[name="captchaToken"]').val()
                 || $('input[name="captcha_token"]').val()
                 || $('input[name="token"]').val()
+                || $('input[name="captchatoken"]').val()
                 || '';
 
   S.ncforminfo   = $('input[name="__ncforminfo"]').val()
                 || $('input[name="_token"]').val()
+                || $('input[name="csrf_token"]').val()
                 || $('input[name="csrf"]').val()
                 || '';
 
-  console.log('captchaToken:', S.captchaToken ? S.captchaToken.slice(0,30)+'...' : 'TRỐNG ⚠');
-  console.log('ncforminfo  :', S.ncforminfo   ? S.ncforminfo.slice(0,30)+'...'   : 'TRỐNG ⚠');
+  console.log('cookie      :', S.cookie.slice(0, 40));
+  console.log('captchaToken:', S.captchaToken ? S.captchaToken.slice(0, 30) + '...' : '⚠ TRỐNG');
+  console.log('ncforminfo  :', S.ncforminfo   ? S.ncforminfo.slice(0, 30)   + '...' : '⚠ TRỐNG');
 
   return $;
 }
@@ -68,16 +70,12 @@ app.get('/init-session', async (req, res) => {
   }
 });
 
-// ── GET /raw-html  — trả về HTML thô để debug
+// ── GET /raw-html
 app.get('/raw-html', async (req, res) => {
   try {
     const r = await axios.get(`${BASE}/ket-qua`, {
       httpsAgent: agent,
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept':     'text/html,application/xhtml+xml',
-        'Cookie':     S.cookie,
-      },
+      headers: { ...HEADERS, Cookie: S.cookie },
       validateStatus: s => s < 400,
     });
     res.send(r.data);
@@ -94,14 +92,14 @@ app.get('/captcha-img', async (req, res) => {
     const imgRes = await axios.get(`${BASE}/captcha/image`, {
       httpsAgent: agent,
       headers: {
-        'Cookie':     S.cookie,
-        'Referer':    `${BASE}/ket-qua`,
-        'User-Agent': 'Mozilla/5.0',
-        'Accept':     '*/*',
+        ...HEADERS,
+        Cookie:  S.cookie,
+        Referer: `${BASE}/ket-qua`,
+        Accept:  '*/*',
       },
     });
 
-    console.log('captcha content-type:', imgRes.headers['content-type']);
+    console.log('captcha type:', imgRes.headers['content-type']);
 
     let svgStr = '';
     if (typeof imgRes.data === 'object' && imgRes.data.image) {
@@ -130,31 +128,29 @@ app.post('/tracuu', async (req, res) => {
   const { sbd, captchaText, captchaToken, ncforminfo, cookie } = req.body;
   try {
     const body = qs.stringify({
-      cccd:          String(sbd),
-      captchaText:   captchaText  || '',
-      captchaToken:  captchaToken || S.captchaToken,
-      __ncforminfo:  ncforminfo   || S.ncforminfo,
+      cccd:         String(sbd),
+      captchaText:  captchaText  || '',
+      captchaToken: captchaToken || S.captchaToken,
+      __ncforminfo: ncforminfo   || S.ncforminfo,
     });
 
-    console.log(`→ POST SBD=${sbd} captcha="${captchaText}" token="${(captchaToken||S.captchaToken).slice(0,20)}..."`);
+    console.log(`→ SBD=${sbd} captcha="${captchaText}" token="${(captchaToken||S.captchaToken).slice(0,20)}..."`);
 
     const r = await axios.post(`${BASE}/ket-qua`, body, {
-      httpsAgent: agent,
+      httpsAgent:   agent,
       maxRedirects: 10,
       headers: {
-        'Content-Type':    'application/x-www-form-urlencoded',
-        'Cookie':          cookie || S.cookie,
-        'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept':          'text/html,application/xhtml+xml',
-        'Accept-Language': 'vi-VN,vi;q=0.9',
-        'Origin':          BASE,
-        'Referer':         `${BASE}/ket-qua`,
+        ...HEADERS,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie:         cookie || S.cookie,
+        Origin:         BASE,
+        Referer:        `${BASE}/ket-qua`,
       },
       validateStatus: s => s < 500,
     });
 
     const finalUrl = r.request?.res?.responseUrl || '';
-    console.log(`← finalUrl: ${finalUrl}`);
+    console.log(`← ${finalUrl}`);
 
     if (finalUrl.includes('error=captcha')) {
       return res.json({ success: false, error: 'captcha_wrong', sbd });
@@ -173,7 +169,7 @@ app.post('/tracuu', async (req, res) => {
   }
 });
 
-// ── Parse HTML kết quả
+// ── Parse HTML → JSON
 function parseHtml(html) {
   const $ = cheerio.load(html);
 
