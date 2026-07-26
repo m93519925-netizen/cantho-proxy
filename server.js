@@ -13,7 +13,6 @@ const UA    = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 
 let S = { cookie: '', ncforminfo: '' };
 
-// ── Lấy cookie + ncforminfo từ trang /ket-qua
 async function refreshSession() {
   const r = await axios.get(`${BASE}/ket-qua`, {
     httpsAgent: agent,
@@ -33,10 +32,9 @@ async function refreshSession() {
   S.ncforminfo = $('input[name="__ncforminfo"]').val() || '';
 
   console.log('cookie     :', S.cookie.slice(0, 40));
-  console.log('ncforminfo :', S.ncforminfo.slice(0, 40) + '...');
+  console.log('ncforminfo :', S.ncforminfo.slice(0, 30) + '...');
 }
 
-// ── Lấy captcha image + token từ /captcha/image
 async function fetchCaptcha() {
   const r = await axios.get(`${BASE}/captcha/image`, {
     httpsAgent: agent,
@@ -47,7 +45,6 @@ async function fetchCaptcha() {
       'Accept':     '*/*',
     },
   });
-  // Server trả về { image: "<svg...>", token: "abc123..." }
   return {
     svg:          r.data.image || '',
     captchaToken: r.data.token || '',
@@ -71,9 +68,7 @@ app.get('/captcha-img', async (req, res) => {
     if (req.query.refresh === '1') await refreshSession();
 
     const { svg, captchaToken } = await fetchCaptcha();
-
     console.log('captchaToken:', captchaToken.slice(0, 30) + '...');
-    console.log('svg length  :', svg.length);
 
     const b64 = Buffer.from(svg).toString('base64');
     res.json({
@@ -100,7 +95,7 @@ app.post('/tracuu', async (req, res) => {
       __ncforminfo: ncforminfo   || S.ncforminfo,
     });
 
-    console.log(`→ SBD=${sbd} captcha="${captchaText}" token="${captchaToken.slice(0,20)}..."`);
+    console.log(`→ SBD=${sbd} captcha="${captchaText}" token="${(captchaToken||'').slice(0,20)}..."`);
 
     const r = await axios.post(`${BASE}/ket-qua`, body, {
       httpsAgent:   agent,
@@ -123,11 +118,17 @@ app.post('/tracuu', async (req, res) => {
     if (finalUrl.includes('error=captcha')) {
       return res.json({ success: false, error: 'captcha_wrong', sbd });
     }
-    if (finalUrl.includes('error=')) {
-      return res.json({ success: false, error: 'not_found', sbd });
-    }
+
     if (!finalUrl.includes('chi-tiet')) {
-      return res.json({ success: false, error: 'unknown_redirect', url: finalUrl, sbd });
+      const html = r.data || '';
+      if (
+        html.includes('không tìm thấy') ||
+        html.includes('Không tìm thấy') ||
+        html.includes('error=not_found')
+      ) {
+        return res.json({ success: false, error: 'not_found', sbd });
+      }
+      return res.json({ success: false, error: 'invalid_sbd', sbd });
     }
 
     res.json({ success: true, sbd, ...parseHtml(r.data) });
@@ -156,8 +157,6 @@ function parseHtml(html) {
     if (label) scores[label] = parseFloat(val.replace(',', '.').replace(/\.$/, '')) || null;
   });
 
-  const tong = Object.values(scores).reduce((a, b) => a + (b || 0), 0);
-
   const wishes = [];
   $('.result-table tbody tr').each((_, row) => {
     const c = $(row).find('td');
@@ -171,13 +170,17 @@ function parseHtml(html) {
     });
   });
 
+  const tong_diem =
+    wishes.find(w => w.diem_xet_tuyen && w.diem_xet_tuyen !== '—')?.diem_xet_tuyen
+    || Object.values(scores).reduce((a, b) => a + (b || 0), 0).toFixed(2);
+
   return {
     ho_ten,
     cccd:        meta['CCCD/Định danh cá nhân'] || '',
     truong_thcs: meta['Trường THCS'] || '',
     trang_thai:  $('.result-badge').first().text().trim(),
     diem:        scores,
-    tong_diem:   Math.round(tong * 100) / 100,
+    tong_diem,
     nguyen_vong: wishes,
   };
 }
